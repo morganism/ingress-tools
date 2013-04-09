@@ -1,0 +1,496 @@
+#!/usr/bin/perl
+
+##################################################
+# script   : portalMapper
+# author   : Cartesian Limited
+# author   : msziraki
+# date     : Wed Mar 20 10:49:00 GMT 2013
+# $Revision: 1.7 
+##################################################
+
+use strict;
+use diagnostics;
+
+use Data::Dumper;
+use Math::Complex;
+use XML::Simple;
+
+use constant PI    => 4 * atan2(1, 1);
+
+my $version = "";
+my $Revision = "";
+my $number = "";
+$version = "$Revision: 1.7 $number";
+
+# N.B.: add lexically scoped variables and assign them in getArgs ($file, below)
+my $maximumPortalSeparation = 75; # metres
+my $file;
+my $csv;
+
+# comment this out if necessary
+usage() unless (@ARGV);
+getArgs(@ARGV);
+
+print "FILE is [$file]\n";
+
+my $oPortalContainer = new PortalContainer();
+my @oPortals = parsePortalData($file);
+print Dumper($oPortalContainer);
+
+
+my $checkedPortals = {};
+my $closePairs = {};
+my $uniquePortalList = {};
+for (my $i = 0; $i < scalar(@oPortals); $i++)
+{
+	my $i_oPortal = $oPortals[$i];
+	INNER_LOOP:
+	for (my $j = 0; $j < scalar(@oPortals); $j++)
+	{
+		next INNER_LOOP if (($i == $j) or (defined $checkedPortals->{"$j,$i"}));
+		my $j_oPortal = $oPortals[$j];
+		my $distance = getDistance($i_oPortal, $j_oPortal);
+		$checkedPortals->{"$i,$j"} = $distance;
+		if ($distance <= $maximumPortalSeparation)
+		{
+			$closePairs->{"$i,$j"} = $distance;
+			my $i_guid = $i_oPortal->getGuid();
+			my $j_guid = $j_oPortal->getGuid();
+			if (not defined $uniquePortalList->{$i_guid})
+			{
+				$uniquePortalList->{$i_guid} = $i_oPortal;
+			}
+			if (not defined $uniquePortalList->{$j_guid})
+			{
+				$uniquePortalList->{$j_guid} = $j_oPortal;
+			}
+		}
+	}
+}
+
+my $checkedCount = scalar(keys %{$checkedPortals});
+print "Checked $checkedCount portals pairs.\n";
+my $closePairCount = scalar(keys %{$closePairs});
+print "Found $closePairCount close portal pairs.\n";
+
+foreach my $guid (sort keys %{$uniquePortalList})
+{
+	my $oPortal = $uniquePortalList->{$guid};
+	print Dumper($oPortal);
+}
+
+
+
+# now 
+
+
+my $outfile = $file . ".kml";
+my $header = qq
+{<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://earth.google.com/kml/2.2">
+<Document>
+};
+my $footer = "</Document></kml>";
+open OUT, ">$outfile";
+print OUT $header;
+foreach my $guid (sort keys %{$uniquePortalList})
+{
+	my $oPortal = $uniquePortalList->{$guid};
+
+	my $kmlString = $oPortal->getKml();
+	print OUT $kmlString;
+}
+print OUT $footer;
+foreach my $pair (sort keys %{$closePairs})
+{
+	my ($i, $j) = split /,/, $pair;
+	my $i_oPortal = $oPortals[$i];
+	my $j_oPortal = $oPortals[$j];
+
+	my $i_name = $i_oPortal->getName();
+	my $j_name = $j_oPortal->getName();
+
+	my $d = $closePairs->{$pair};
+
+	print "$i_name, $j_name : $d metres\n";
+}
+
+
+
+
+
+
+
+
+
+sub parsePortalData
+{
+	my $file = shift;
+	# expects data in file like this
+	#3673ebcf272c480b84e7d349da6874a4.12,51.51145,-0.112293,RESISTANCE,Ship Lamp
+
+=head1
+	1) Use Chrome
+	2) F12
+	3) switch to "console"
+	
+	4) Enter the following code (between <SNIP></SNIP>:
+<SNIP>
+document.open("text/html");
+document.writeln("<pre>");
+$.each(window.portals,function(guid,portal){
+pd=portal.options.details;
+document.writeln ( guid + "," + pd.locationE6.latE6/1000000.0 + "," + pd.locationE6.lngE6/1000000.0 + "," + pd.controllingTeam.team + "," + pd.portalV2.descriptiveText.TITLE );
+})
+document.writeln("</pre>");
+</SNIP>
+
+	5) Save the output to a file FILENAME
+	6) run this script with -f FILENAME
+
+=cut
+
+	my @oPortals; # store portal objects
+	open IN, $file; # open portal data file
+	while (<IN>)
+	{
+		chomp;
+		my ($guid, $latitude, $longitude, $faction, @theRest) = split /,/, $_;
+		my $name = join " ", @theRest;
+		$name =~ s/([\x7f-\x{ffffff}])/as_entity($1)/ge; # support foreign chars
+
+		my $oPortal = new Portal
+		(
+			{
+				name => $name,
+				guid => $guid,
+				latitude => $latitude,
+				longitude => $longitude
+			}
+		); # create a portal object
+		$oPortalContainer->addPortal($oPortal);
+
+		push @oPortals, $oPortal; # store
+	}
+	close IN;
+	print "Loaded " . scalar(@oPortals) . " portals.\n";
+	return @oPortals;
+}
+
+sub getDistance
+{
+	my ($i_oPortal, $j_oPortal) = @_; # a pair of portal objects
+	my $lat_i = $i_oPortal->getLatitude();
+	my $lon_i = $i_oPortal->getLongitude();
+	my $lat_j = $j_oPortal->getLatitude();
+	my $lon_j = $j_oPortal->getLongitude();
+
+	my $R = 6371000; # metres r of earth 
+	my $dLat_r = toRad($lat_j-$lat_i);
+	my $dLon_r = toRad($lon_j-$lon_i);
+	my $lat_i_r = toRad($lat_i);
+	my $lat_j_r = toRad($lat_j);
+
+	# Haversine it
+	my $a = sin($dLat_r/2) * sin($dLat_r/2) +
+					sin($dLon_r/2) * sin($dLon_r/2) * cos($lat_i_r) * cos($lat_j_r);
+	my $c = 2 * atan2(sqrt($a), sqrt(1-$a));
+	my $d = $R * $c;
+
+	return $d;
+}
+
+sub toRad
+{
+  my $degrees = shift;
+  my $radians = $degrees * PI / 180;
+  return $radians;
+}
+
+
+# put subs below here
+sub as_entity
+{
+  my $char = shift;
+  return sprintf("&#x%.4x;", ord($char)); # foreign char support
+}
+
+
+# display some help
+sub usage
+{
+	my $script = $0;
+	my @parts = split /\//, $script;
+	$script = pop(@parts);
+	$script =~ s/\.\///;
+	print "	$script Version: $version\n\n";
+	print "	USAGE:\n\n";
+	print "		$script [{-h|--help}] [{-v|--version}] {-f|--file} filename\n\n";
+	print "\n";
+	print "	ARGUMENTS:\n";
+	print "		 -h, --help        Display this usage screen.\n";
+	print "		 -v, --version     Display version information.\n";
+	print "		 -c, --csv        Specify CSV output filename.\n";
+	print "		 -d, --maximum-separation METRES       Specify maximum portal separation.\n";
+	print "		 -f, --file        Specify filename.\n";
+	print "\n";
+	print "	NOTES:\n";
+}
+
+# process the arguments -- add as necessary
+sub getArgs
+{
+	while (@_)
+	{
+		my $arg = shift;
+		if ($arg eq '-h' or $arg eq '--help')
+		{
+			usage();
+			exit;
+		}
+		elsif ($arg eq '-v' or $arg eq '--version')
+		{
+			print "Version: $version\n";
+			exit;
+		}
+		elsif ($arg eq '-c' or $arg eq '--csv')
+		{
+			$csv = shift;
+		}
+		elsif ($arg eq '-d' or $arg eq '--maximum-separation')
+		{
+			$maximumPortalSeparation = shift;
+		}
+		elsif ($arg eq '-f' or $arg eq '--file')
+		{
+			$file = shift;
+		}
+	}
+}
+
+=head1
+All portals
+=cut
+package PortalContainer;
+
+sub new
+{
+	my $proto = shift;
+	my $class = ref $proto || $proto;
+	my $self = {};
+
+	bless $self, $class;
+	return $self;
+}
+sub addPortal
+{
+	my $self = shift;
+	my $oPortal = shift;
+	my $guid = $oPortal->getGuid();
+	$self->{portals}->{$guid} = $oPortal;
+}
+
+sub getPortalByGuid
+{
+	my $self = shift;
+	my $guid = shift;
+	return $self->{portals}->{$guid};
+}
+
+1;
+
+=head1
+A single Portal
+=cut
+package Portal;
+use XML::Simple;
+
+sub new
+{
+	my $proto = shift;
+	my $class = ref $proto || $proto;
+	my $self = {};
+	my $args = shift;
+	$self->{name} = $args->{name} if (defined $args->{name});
+	$self->{faction} = $args->{faction} if (defined $args->{faction});
+	$self->{guid} = $args->{guid} if (defined $args->{guid});
+	$self->{latitude} = $args->{latitude} if (defined $args->{latitude});
+	$self->{longitude} = $args->{longitude} if (defined $args->{longitude});
+	$self->{key_count} = $args->{key_count} if (defined $args->{key_count});
+	$self->{description} = $args->{description} if (defined $args->{description});
+	$self->{Point}->{coordinates} = $args->{coordinates} if (defined $args->{coordinates}); #Point->coordinates
+
+	if (defined $self->{latitude} and defined $self->{longitude} and (not defined $self->{Point}->{coordinates}))
+	{
+		my $longitude = $self->{longitude};
+		my $latitude = $self->{latitude};
+		$self->{Point}->{coordinates} = "$longitude, $latitude, 0.000000";
+	}
+	elsif (defined $self->{Point}->{coordinates} and (not defined $self->{latitude}) and (not defined $self->{longitude}))
+	{
+		my $z;
+		($self->{longitude}, $self->{latitude}, $z) = split /,/, $self->{Point}->{coordinates};
+	} 
+
+	bless $self, $class;
+	return $self;
+}
+
+
+sub getName
+{
+	my $self = shift;
+	return $self->{name};
+}
+sub getGuid
+{
+	my $self = shift;
+	return $self->{guid};
+}
+sub getLatitude
+{
+	my $self = shift;
+	return $self->{latitude};
+}
+sub getLongitude
+{
+	my $self = shift;
+	return $self->{longitude};
+}
+sub getKeyCount
+{
+	my $self = shift;
+	return $self->{key_count}
+}
+sub getSnippet
+{
+	my $self = shift;
+	return $self->{Snippet}
+}
+sub getStyleUrl
+{
+	my $self = shift;
+	return $self->{styleUrl}
+}
+sub getDescription
+{
+	my $self = shift;
+	return $self->{description}
+}
+sub getCoordinates
+{
+	my $self = shift;
+	return $self->{Point}->{coordinates}
+}
+sub setKeyCount
+{
+	my $self = shift;
+	my $kc = shift;
+	$self->{key_count} = $kc;
+}
+sub getKml
+{
+	my $self = shift;
+	my $data = {};
+=head1
+
+This is what we want to return 
+
+<Placemark>
+  <name>londra</name>
+  <Point>
+    <coordinates>-0.089286,51.513187,0.000000</coordinates>
+  </Point>
+  <description>8-10 Mansion House Pl, City of London, London, Greater London EC4N 8BJ, UK</description>
+  <key_count>5</key_count>
+</Placemark>
+=cut
+
+	$data->{name} = $self->getName();
+	$data->{description} = $self->getName();
+	$data->{Point}->{coordinates} = $self->getCoordinates();
+
+	my $kmlString = XMLout($data, RootName => "Placemark", NoAttr => 1);
+
+	return $kmlString;
+}
+		
+
+
+1;
+
+=head1 NAME
+
+normalisePortalKml - Some short description
+
+
+=head1 SYNOPSIS
+
+B<normalisePortalKml> [OPTION] ...
+
+=head1 DESCRIPTION
+
+Place a desription of this here.
+
+=head2 OPTIONS        
+
+Should include options and parameters.
+
+
+B<-h, --help>
+        display some help and usage.
+
+B<-v, --version>
+        display version information.
+
+
+=head1 USAGE
+
+Usage information goes here.
+
+
+=head1 EXAMPLES
+
+Place examples here.
+
+=head1 RETURN VALUES  
+
+Sections two and three function calls.
+
+=head1 ENVIRONMENT    
+
+Describe environment variables.
+
+=head1 FILES          
+
+Files associated with the subject.
+
+=head1 DIAGNOSTICS    
+
+Normally used for section 4 device interface diagnostics.
+
+=head1 ERRORS         
+
+Sections two and three error and signal handling.
+
+=head1 SEE ALSO       
+
+Cross references and citations.
+
+=head1 STANDARDS      
+
+Conformance to standards if applicable.
+
+=head1 BUGS           
+
+Gotchas and caveats.
+
+=head1 SECURITY CONSIDERATIONS
+
+=head1 COPYRIGHT
+
+Copyright 2013, Cartesian Limited
+
+=cut
+
+
