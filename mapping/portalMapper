@@ -35,9 +35,9 @@ print "FILE is [$file]\n";
 
 my $oPortalContainer = new PortalContainer();
 my @oPortals = parsePortalData($file);
-print Dumper($oPortalContainer);
 
 
+# check each pair of portals
 my $checkedPortals = {};
 my $closePairs = {};
 my $uniquePortalList = {};
@@ -51,11 +51,18 @@ for (my $i = 0; $i < scalar(@oPortals); $i++)
 		my $j_oPortal = $oPortals[$j];
 		my $distance = getDistance($i_oPortal, $j_oPortal);
 		$checkedPortals->{"$i,$j"} = $distance;
+		# if distance is OK than add to pairs and unique list
 		if ($distance <= $maximumPortalSeparation)
 		{
 			$closePairs->{"$i,$j"} = $distance;
 			my $i_guid = $i_oPortal->getGuid();
 			my $j_guid = $j_oPortal->getGuid();
+
+			# add the i as neighbor to j and j to i
+			$i_oPortal->addNeighbor($j_guid);
+			$j_oPortal->addNeighbor($i_guid);
+			$oPortalContainer->updatePortal($i_oPortal);
+			$oPortalContainer->updatePortal($j_oPortal);
 			if (not defined $uniquePortalList->{$i_guid})
 			{
 				$uniquePortalList->{$i_guid} = $i_oPortal;
@@ -73,17 +80,11 @@ print "Checked $checkedCount portals pairs.\n";
 my $closePairCount = scalar(keys %{$closePairs});
 print "Found $closePairCount close portal pairs.\n";
 
-foreach my $guid (sort keys %{$uniquePortalList})
-{
-	my $oPortal = $uniquePortalList->{$guid};
-	print Dumper($oPortal);
-}
+sleep 5;
+print Dumper($oPortalContainer);
 
 
-
-# now 
-
-
+#write some KML
 my $outfile = $file . ".kml";
 my $header = qq
 {<?xml version="1.0" encoding="UTF-8"?>
@@ -101,6 +102,9 @@ foreach my $guid (sort keys %{$uniquePortalList})
 	print OUT $kmlString;
 }
 print OUT $footer;
+
+# write a text list
+print "i_name : j_name : metres\n";
 foreach my $pair (sort keys %{$closePairs})
 {
 	my ($i, $j) = split /,/, $pair;
@@ -112,7 +116,7 @@ foreach my $pair (sort keys %{$closePairs})
 
 	my $d = $closePairs->{$pair};
 
-	print "$i_name, $j_name : $d metres\n";
+	print "$i_name : $j_name : $d metres\n";
 }
 
 
@@ -150,13 +154,20 @@ document.writeln("</pre>");
 
 =cut
 
-	my @oPortals; # store portal objects
 	open IN, $file; # open portal data file
+	my $i = 0;
+	my $j = 0;
 	while (<IN>)
 	{
 		chomp;
-		my ($guid, $latitude, $longitude, $faction, @theRest) = split /,/, $_;
-		my $name = join " ", @theRest;
+		next unless ($i++); #skip the header
+		$j++;
+		my( $guid,$Portal,$Level,$Team,
+			$R1,$R2,$R3,$R4,$R5,$R6,$R7,$R8,
+			$Energy,$S1,$S2,$S3,$S4,
+			$APGain,$EAP,$latitude,$longitude,
+			$Slot1,$Slot2,$Slot3,$Slot4,$Slot5,$Slot6,$Slot7,$Slot8) = split /\t/, $_;
+		my $name = $Portal;
 		$name =~ s/([\x7f-\x{ffffff}])/as_entity($1)/ge; # support foreign chars
 
 		my $oPortal = new Portal
@@ -173,8 +184,8 @@ document.writeln("</pre>");
 		push @oPortals, $oPortal; # store
 	}
 	close IN;
-	print "Loaded " . scalar(@oPortals) . " portals.\n";
-	return @oPortals;
+	print "Loaded $j portals.\n";
+	return $oPortalContainer->getAllPortals();
 }
 
 sub getDistance
@@ -288,6 +299,20 @@ sub addPortal
 	my $oPortal = shift;
 	my $guid = $oPortal->getGuid();
 	$self->{portals}->{$guid} = $oPortal;
+}
+
+# because it's by guid it's the same thing really, just not confusing
+sub updatePortal
+{
+	my $self = shift;
+	my $oPortal = shift;
+	$self->addPortal($oPortal);
+}
+
+sub getAllPortals
+{
+	my $self = shift;
+	return values(%{$self->{portals}});
 }
 
 sub getPortalByGuid
@@ -413,6 +438,14 @@ This is what we want to return
 	my $kmlString = XMLout($data, RootName => "Placemark", NoAttr => 1);
 
 	return $kmlString;
+}
+
+sub addNeighbor
+{
+	my $self = shift;
+	my $guid = shift;
+	push @{$self->{neighbors}}, $guid;
+	$self->{neighbor_count} = scalar(@{$self->{neighbors}});
 }
 		
 
