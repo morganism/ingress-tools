@@ -80,28 +80,9 @@ print "Checked $checkedCount portals pairs.\n";
 my $closePairCount = scalar(keys %{$closePairs});
 print "Found $closePairCount close portal pairs.\n";
 
-sleep 5;
-print Dumper($oPortalContainer);
 
+writeKml(keys %{$uniquePortalList});
 
-#write some KML
-my $outfile = $file . ".kml";
-my $header = qq
-{<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://earth.google.com/kml/2.2">
-<Document>
-};
-my $footer = "</Document></kml>";
-open OUT, ">$outfile";
-print OUT $header;
-foreach my $guid (sort keys %{$uniquePortalList})
-{
-	my $oPortal = $uniquePortalList->{$guid};
-
-	my $kmlString = $oPortal->getKml();
-	print OUT $kmlString;
-}
-print OUT $footer;
 
 # write a text list
 print "i_name : j_name : metres\n";
@@ -125,6 +106,29 @@ foreach my $pair (sort keys %{$closePairs})
 
 
 
+#write some KML
+sub writeKml
+{
+	my @guids = @_;
+
+	my $outfile = $file . ".kml";
+	my $header = qq
+	{<?xml version="1.0" encoding="UTF-8"?>
+	<kml xmlns="http://earth.google.com/kml/2.2">
+	<Document>
+	};
+	my $footer = "</Document></kml>";
+	open OUT, ">$outfile";
+	print OUT $header;
+	foreach my $guid (@guids)
+	{
+		my $oPortal = $oPortalContainer->getPortalByGuid($guid);
+
+		my $kmlString = $oPortal->getKml();
+		print OUT $kmlString;
+	}
+	print OUT $footer;
+}
 
 
 sub parsePortalData
