@@ -16,6 +16,8 @@ use Math::Complex;
 use XML::Simple;
 
 use constant PI    => 4 * atan2(1, 1);
+use constant DEFAULT_MAX_PORTAL_DISTANCE => 75; # metres
+use constant ONE => 1; # metres
 
 my $version = "";
 my $Revision = "";
@@ -23,7 +25,7 @@ my $number = "";
 $version = "$Revision: 1.7 $number";
 
 # N.B.: add lexically scoped variables and assign them in getArgs ($file, below)
-my $maximumPortalSeparation = 75; # metres
+my $maximumPortalSeparation = DEFAULT_MAX_PORTAL_DISTANCE; # metres
 my $file;
 my $csv;
 
@@ -38,75 +40,152 @@ my @oPortals = parsePortalData($file);
 
 
 # check each pair of portals
-my $checkedPortals = {};
-my $closePairs = {};
-my $uniquePortalList = {};
-for (my $i = 0; $i < scalar(@oPortals); $i++)
-{
-	my $i_oPortal = $oPortals[$i];
-	INNER_LOOP:
-	for (my $j = 0; $j < scalar(@oPortals); $j++)
-	{
-		next INNER_LOOP if (($i == $j) or (defined $checkedPortals->{"$j,$i"}));
-		my $j_oPortal = $oPortals[$j];
-		my $distance = getDistance($i_oPortal, $j_oPortal);
-		$checkedPortals->{"$i,$j"} = $distance;
-		# if distance is OK than add to pairs and unique list
-		if ($distance <= $maximumPortalSeparation)
-		{
-			$closePairs->{"$i,$j"} = $distance;
-			my $i_guid = $i_oPortal->getGuid();
-			my $j_guid = $j_oPortal->getGuid();
+our $checkedPortals = {}; # only check new pairs
+our $closePairs = {}; # hash keyed on i,j (offset on @oPortals) giving distance .. may obsolete this
+our $uniquePortalList = {}; # will contain all portals that have a 'close' neighbour
+determineClosePairs();
 
-			# add the i as neighbor to j and j to i
-			$i_oPortal->addNeighbor($j_guid);
-			$j_oPortal->addNeighbor($i_guid);
-			$oPortalContainer->updatePortal($i_oPortal);
-			$oPortalContainer->updatePortal($j_oPortal);
-			if (not defined $uniquePortalList->{$i_guid})
+
+# ----------- print some progress --------------#
+my $checkedCount = scalar(keys %{$checkedPortals});
+print "Checked $checkedCount portals pairs.\n";
+my $closePairCount = scalar(keys %{$closePairs});
+print "Found $closePairCount close portal pairs.\n";
+# ----------- print some progress --------------#
+
+my @guids = getClusters();
+
+writeKml(@guids);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# flip thru portal container and find portals wit at least 2 neighbours 
+# then get their neighbours too
+sub getClusters
+{
+	my @guids = $oPortalContainer->getAllPortalsGuids();
+	my $candidates = {};
+
+	foreach my $guid (@guids)
+	{
+		my $oPortal = $oPortalContainer->getPortalByGuid($guid);
+		my $neighbourCount = $oPortal->getNeighbourCount();
+		if ($neighbourCount > 3)
+		{
+			my @n = $oPortal->getNeighbours();
+			$candidates->{$guid} = {c => $neighbourCount, n => \@n};	
+		}	
+	}
+
+	# normalise
+	my $outHash = {};
+	foreach my $k (keys %{$candidates})
+	{
+		$outHash->{$k} = 1;	
+		my @ns = $candidates->{$k}->{n};
+		foreach my $n (@{$candidates->{$k}->{n}})
+		{
+			$outHash->{$n} = 1;
+		}
+		
+	}
+
+	return keys %{$outHash};
+}
+
+sub checkNeighbours
+{
+	my ($guids_ref, $candidates_ref, $depth_ref) = @_;
+	my @guids = @{$guids_ref};
+	my $depth = $$depth_ref;
+#print "DEPTH[$depth]\n";
+	return if ($depth > 2);
+	foreach my $guid (@guids)
+	{
+		my $oPortal = $oPortalContainer->getPortalByGuid($guid);
+		my $neighbourCount = $oPortal->getNeighbourCount();
+		next unless ($neighbourCount > ONE);
+		$candidates_ref->{$guid} = ONE; # store the first
+
+		# recurse into neighbours
+		my @neighbourGuids = $oPortal->getNeighbours();
+		my $d = $$depth_ref;
+		$d++;
+		checkNeighbours(\@neighbourGuids, $candidates_ref, \$d);
+	}
+}
+
+sub printTextList
+{
+	# write a text list
+	print "i_name : j_name : metres\n";
+	foreach my $pair (sort keys %{$closePairs})
+	{
+		my ($i, $j) = split /,/, $pair;
+		my $i_oPortal = $oPortals[$i];
+		my $j_oPortal = $oPortals[$j];
+
+		my $i_name = $i_oPortal->getName();
+		my $j_name = $j_oPortal->getName();
+
+		my $d = $closePairs->{$pair};
+
+		print "$i_name : $j_name : $d metres\n";
+	}
+}
+
+sub determineClosePairs
+{
+	for (my $i = 0; $i < scalar(@oPortals); $i++)
+	{
+		my $i_oPortal = $oPortals[$i];
+		INNER_LOOP:
+		for (my $j = 0; $j < scalar(@oPortals); $j++)
+		{
+			next INNER_LOOP if (($i == $j) or (defined $checkedPortals->{"$j,$i"})); # skip dupes
+			my $j_oPortal = $oPortals[$j];
+			my $distance = getDistance($i_oPortal, $j_oPortal);
+			$checkedPortals->{"$i,$j"} = $distance;
+			# if distance is OK than add to pairs and unique list
+			if ($distance <= $maximumPortalSeparation) # this is close
 			{
-				$uniquePortalList->{$i_guid} = $i_oPortal;
-			}
-			if (not defined $uniquePortalList->{$j_guid})
-			{
-				$uniquePortalList->{$j_guid} = $j_oPortal;
+				$closePairs->{"$i,$j"} = $distance;
+				my $i_guid = $i_oPortal->getGuid();
+				my $j_guid = $j_oPortal->getGuid();
+
+				# add the i as neighbour to j and j to i
+				$i_oPortal->addNeighbour($j_guid);
+				$j_oPortal->addNeighbour($i_guid);
+				$oPortalContainer->updatePortal($i_oPortal); # keep the portal container up2date
+				$oPortalContainer->updatePortal($j_oPortal);
+				if (not defined $uniquePortalList->{$i_guid})
+				{
+					$uniquePortalList->{$i_guid} = $i_oPortal;
+				}
+				if (not defined $uniquePortalList->{$j_guid})
+				{
+					$uniquePortalList->{$j_guid} = $j_oPortal;
+				}
 			}
 		}
 	}
 }
 
-my $checkedCount = scalar(keys %{$checkedPortals});
-print "Checked $checkedCount portals pairs.\n";
-my $closePairCount = scalar(keys %{$closePairs});
-print "Found $closePairCount close portal pairs.\n";
-
-
-writeKml(keys %{$uniquePortalList});
-
-
-# write a text list
-print "i_name : j_name : metres\n";
-foreach my $pair (sort keys %{$closePairs})
-{
-	my ($i, $j) = split /,/, $pair;
-	my $i_oPortal = $oPortals[$i];
-	my $j_oPortal = $oPortals[$j];
-
-	my $i_name = $i_oPortal->getName();
-	my $j_name = $j_oPortal->getName();
-
-	my $d = $closePairs->{$pair};
-
-	print "$i_name : $j_name : $d metres\n";
-}
-
-
-
-
-
-
 
 #write some KML
+# expects list of GUIDs
 sub writeKml
 {
 	my @guids = @_;
@@ -319,6 +398,12 @@ sub getAllPortals
 	return values(%{$self->{portals}});
 }
 
+sub getAllPortalsGuids
+{
+	my $self = shift;
+	return keys(%{$self->{portals}});
+}
+
 sub getPortalByGuid
 {
 	my $self = shift;
@@ -417,6 +502,16 @@ sub setKeyCount
 	my $kc = shift;
 	$self->{key_count} = $kc;
 }
+sub getNeighbourCount
+{
+	my $self = shift;
+	return (defined $self->{neighbour_count}) ? $self->{neighbour_count} : 0;
+}
+sub getNeighbours
+{
+	my $self = shift;
+	return @{$self->{neighbours}};
+}
 sub getKml
 {
 	my $self = shift;
@@ -444,12 +539,12 @@ This is what we want to return
 	return $kmlString;
 }
 
-sub addNeighbor
+sub addNeighbour
 {
 	my $self = shift;
 	my $guid = shift;
-	push @{$self->{neighbors}}, $guid;
-	$self->{neighbor_count} = scalar(@{$self->{neighbors}});
+	push @{$self->{neighbours}}, $guid;
+	$self->{neighbour_count} = scalar(@{$self->{neighbours}});
 }
 		
 
