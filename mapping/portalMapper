@@ -17,7 +17,9 @@ use XML::Simple;
 
 use constant PI    => 4 * atan2(1, 1);
 use constant DEFAULT_MAX_PORTAL_DISTANCE => 75; # metres
-use constant ONE => 1; # metres
+use constant DEFAULT_NEIGHBOURS => 3;
+use constant ONE => 1;
+use constant TRUE => 1;
 
 my $version = "";
 my $Revision = "";
@@ -26,8 +28,10 @@ $version = "$Revision: 1.7 $number";
 
 # N.B.: add lexically scoped variables and assign them in getArgs ($file, below)
 my $maximumPortalSeparation = DEFAULT_MAX_PORTAL_DISTANCE; # metres
+my $neighbours = DEFAULT_NEIGHBOURS;
 my $file;
 my $csv;
+my $heatmap;
 
 # comment this out if necessary
 usage() unless (@ARGV);
@@ -57,6 +61,7 @@ my @guids = getClusters();
 
 writeKml(@guids);
 
+makeHeatmap() if ($heatmap);
 
 
 
@@ -67,8 +72,107 @@ writeKml(@guids);
 
 
 
+sub makeHeatmap
+{
 
+	my $html_start = '
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no" />
+    <style type="text/css">
+      html { height: 100% }
+      body { height: 100%; margin: 0; padding: 0 }
+      map-canvas { height: 100% }
+    </style>
+    <script type="text/javascript"
+      src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAJAv1-fyNmoWywZf6jM6mxiyt5K7A9Ypg&sensor=false&libraries=visualization">
+    </script>
+    <script type="text/javascript">
+var map, pointarray, heatmap;var taxiData = [
+';
+	my $html_end = '
+];
 
+function initialize() {
+  var mapOptions = {
+    zoom: 13,
+    center: new google.maps.LatLng(51.51607, -0.11498),
+    mapTypeId: google.maps.MapTypeId.SATELLITE
+  };
+
+  map = new google.maps.Map(document.getElementById(\'map-canvas\'),
+      mapOptions);
+
+  var pointArray = new google.maps.MVCArray(taxiData);
+
+  heatmap = new google.maps.visualization.HeatmapLayer({
+    data: pointArray
+  });
+
+  heatmap.setMap(map);
+}
+
+function toggleHeatmap() {
+  heatmap.setMap(heatmap.getMap() ? null : map);
+}
+
+function changeGradient() {
+  var gradient = [
+    \'rgba(0, 255, 255, 0)\',
+    \'rgba(0, 255, 255, 1)\',
+    \'rgba(0, 191, 255, 1)\',
+    \'rgba(0, 127, 255, 1)\',
+    \'rgba(0, 63, 255, 1)\',
+    \'rgba(0, 0, 255, 1)\',
+    \'rgba(0, 0, 223, 1)\',
+    \'rgba(0, 0, 191, 1)\',
+    \'rgba(0, 0, 159, 1)\',
+    \'rgba(0, 0, 127, 1)\',
+    \'rgba(63, 0, 91, 1)\',
+    \'rgba(127, 0, 63, 1)\',
+    \'rgba(191, 0, 31, 1)\',
+    \'rgba(255, 0, 0, 1)\'
+  ]
+  heatmap.setOptions({
+    gradient: heatmap.get(\'gradient\') ? null : gradient
+  });
+}
+
+function changeRadius() {
+  heatmap.setOptions({radius: heatmap.get(\'radius\') ? null : 20});
+}
+
+function changeOpacity() {
+  heatmap.setOptions({opacity: heatmap.get(\'opacity\') ? null : 0.2});
+}
+
+google.maps.event.addDomListener(window, \'load\', initialize);
+    </script>
+  </head>
+<body onload="initialize()" style="height: 100%;">
+    <div id="map-canvas"/>
+  </body>
+</html>';
+
+	my @mapItem = ();
+	my @guids = $oPortalContainer->getAllPortalsGuids();
+	foreach my $guid (@guids)
+	{
+		my $oPortal = $oPortalContainer->getPortalByGuid($guid);
+		my $lat = $oPortal->getLatitude();
+		my $lon = $oPortal->getLongitude();
+		my $str = "new google.maps.LatLng($lat, $lon),";	
+		push @mapItem, $str;
+	}
+
+	print "$html_start\n";
+	my $points = join "\n", @mapItem;
+	print "$points\n";
+	print "$html_end\n";
+
+	
+}
 
 
 # flip thru portal container and find portals wit at least 2 neighbours 
@@ -82,7 +186,7 @@ sub getClusters
 	{
 		my $oPortal = $oPortalContainer->getPortalByGuid($guid);
 		my $neighbourCount = $oPortal->getNeighbourCount();
-		if ($neighbourCount > 3)
+		if ($neighbourCount > $neighbours)
 		{
 			my @n = $oPortal->getNeighbours();
 			$candidates->{$guid} = {c => $neighbourCount, n => \@n};	
@@ -197,16 +301,36 @@ sub writeKml
 	<Document>
 	};
 	my $footer = "</Document></kml>";
-	open OUT, ">$outfile";
-	print OUT $header;
+
+	# try to get portals on same map page 
+	my $clusters = {};
 	foreach my $guid (@guids)
 	{
 		my $oPortal = $oPortalContainer->getPortalByGuid($guid);
+		my $lat = substr($oPortal->getLatitude(), 0, 5);
+		my $lon = substr($oPortal->getLongitude(), 0, 5);
+		my $group = $lat . $lon;
+		
+		push @{$clusters->{$group}}, $guid;
+	}
+	open OUT, ">$outfile";
+	print OUT $header;
+	my $c = 0;
+	my $g = 0;
+	foreach my $group (sort keys %{$clusters})
+	{
+		foreach my $guid (@{$clusters->{$group}})
+		{
+			my $oPortal = $oPortalContainer->getPortalByGuid($guid);
 
-		my $kmlString = $oPortal->getKml();
-		print OUT $kmlString;
+			my $kmlString = $oPortal->getKml();
+			print OUT $kmlString;
+			$c++;
+		}
+		$g++;
 	}
 	print OUT $footer;
+	print "Wrote $c map points. In $g groups.\n";
 }
 
 
@@ -325,10 +449,14 @@ sub usage
 	print "		 -h, --help        Display this usage screen.\n";
 	print "		 -v, --version     Display version information.\n";
 	print "		 -c, --csv        Specify CSV output filename.\n";
+	print "		 -H, --heatmap        Make a heatmap.\n";
+	print "		 -n, --neigbours        Only include portals with this many neighbours in start list.\n";
 	print "		 -d, --maximum-separation METRES       Specify maximum portal separation.\n";
-	print "		 -f, --file        Specify filename.\n";
+	print "		 -f, --file        Specify filename generated from IITC plugin: Portals List. My version : http://goo.gl/FSXjZ\n";
 	print "\n";
 	print "	NOTES:\n";
+
+	exit 1;
 }
 
 # process the arguments -- add as necessary
@@ -350,6 +478,14 @@ sub getArgs
 		elsif ($arg eq '-c' or $arg eq '--csv')
 		{
 			$csv = shift;
+		}
+		elsif ($arg eq '-H' or $arg eq '--heatmap')
+		{
+			$heatmap = TRUE;
+		}
+		elsif ($arg eq '-n' or $arg eq '--neighbours')
+		{
+			$neighbours = shift;
 		}
 		elsif ($arg eq '-d' or $arg eq '--maximum-separation')
 		{
